@@ -174,6 +174,130 @@ final class SpectraStorageClientTests: XCTestCase {
         }
     }
 
+    func testUploadProfileImageCreatesPurposePathMetadataAndCompletes() async throws {
+        let client = makeClient()
+        var requestIndex = 0
+        MockURLProtocol.handler = { request in
+            defer { requestIndex += 1 }
+            switch requestIndex {
+            case 0:
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key"), "storage-profile_image-upload-profile-seed-1")
+                XCTAssertEqual(request.url?.path, "/platform/v1/projects/project_123/storage/user-root/upload-intents")
+                let body = try JSONSerialization.jsonObject(with: requestBodyData(request)) as? [String: Any]
+                XCTAssertEqual(body?["object_key"] as? String, "/profile/images/profile-seed-1.png")
+                XCTAssertEqual(body?["content_type"] as? String, "image/png")
+                let metadata = try XCTUnwrap(body?["metadata"] as? [String: String])
+                XCTAssertEqual(metadata["purpose"], "profile_image")
+                return jsonResponse(
+                    status: 201,
+                    body: """
+                    {
+                      "data": {
+                        "upload_id": "upl_profile",
+                        "object_key": "/profile/images/profile-seed-1.png",
+                        "upload_method": "PUT",
+                        "upload_url": "https://storage.example.test/signed-put/profile",
+                        "upload_headers": {
+                          "Content-Type": "image/png"
+                        },
+                        "expires_at": "2026-07-24T01:15:00Z"
+                      }
+                    }
+                    """
+                )
+            case 1:
+                XCTAssertEqual(request.httpMethod, "PUT")
+                XCTAssertEqual(request.url?.path, "/signed-put/profile")
+                XCTAssertEqual(try requestBodyData(request), Data("image-data".utf8))
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+            default:
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key"), "storage-profile_image-complete-profile-seed-1")
+                XCTAssertEqual(request.url?.path, "/platform/v1/projects/project_123/storage/user-root/upload-intents/upl_profile/complete")
+                return storageObjectEnvelope(
+                    status: 202,
+                    objectKey: "/profile/images/profile-seed-1.png",
+                    contentType: "image/png",
+                    byteSize: 10,
+                    metadata: ["purpose": "profile_image"]
+                )
+            }
+        }
+
+        let uploaded = try await client.uploadProfileImage(
+            Data("image-data".utf8),
+            contentType: "image/png",
+            idempotencySeed: "profile-seed-1"
+        )
+
+        XCTAssertEqual(uploaded.purpose, .profileImage)
+        XCTAssertEqual(uploaded.objectKey, "/profile/images/profile-seed-1.png")
+        XCTAssertEqual(uploaded.metadata["purpose"], "profile_image")
+        XCTAssertEqual(requestIndex, 3)
+    }
+
+    func testChatConveniencePathsAndMetadataAreStable() {
+        XCTAssertEqual(
+            SpectraStorageConveniencePaths.chatObjectKey(
+                roomID: "room/1",
+                kindDirectory: "images",
+                clientMessageID: "message 1",
+                fileName: "0.jpg"
+            ),
+            "/chat/room_1/images/message_1/0.jpg"
+        )
+        XCTAssertEqual(try SpectraStorageConveniencePaths.fileExtension(for: "audio/mp4"), "m4a")
+        XCTAssertEqual(try SpectraStorageConveniencePaths.safeFileName("hello world.pdf"), "hello_world.pdf")
+    }
+
+    func testDownloadUserRootObjectToCacheUsesSignedURL() async throws {
+        let client = makeClient()
+        var requestIndex = 0
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        MockURLProtocol.handler = { request in
+            defer { requestIndex += 1 }
+            switch requestIndex {
+            case 0:
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key"), "download-cache-1")
+                XCTAssertEqual(request.url?.path, "/platform/v1/projects/project_123/storage/user-root/objects/profile/images/a.png/download-intents")
+                return jsonResponse(
+                    status: 201,
+                    body: """
+                    {
+                      "data": {
+                        "object_key": "/profile/images/a.png",
+                        "download_url": "https://storage.example.test/signed-get/profile",
+                        "expires_at": "2026-07-24T01:05:00Z"
+                      }
+                    }
+                    """
+                )
+            default:
+                XCTAssertEqual(request.httpMethod, "GET")
+                XCTAssertEqual(request.url?.path, "/signed-get/profile")
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+                    Data("downloaded-image".utf8)
+                )
+            }
+        }
+
+        let cachedURL = try await client.downloadUserRootObjectToCache(
+            path: "/profile/images/a.png",
+            cacheDirectory: temporaryDirectory,
+            idempotencyKey: "download-cache-1"
+        )
+
+        XCTAssertEqual(try Data(contentsOf: cachedURL), Data("downloaded-image".utf8))
+        XCTAssertEqual(cachedURL.lastPathComponent, "a.png")
+        XCTAssertEqual(requestIndex, 2)
+    }
+
     private func makeClient() -> SpectraStorageClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
@@ -225,6 +349,40 @@ private func jsonResponse(status: Int, body: String) -> (HTTPURLResponse, Data) 
             headerFields: ["Content-Type": "application/json"]
         )!,
         Data(body.utf8)
+    )
+}
+
+private func storageObjectEnvelope(
+    status: Int,
+    objectKey: String,
+    contentType: String,
+    byteSize: Int64,
+    metadata: [String: String]
+) -> (HTTPURLResponse, Data) {
+    let metadataJSON = metadata
+        .map { #""\#($0.key)": "\#($0.value)""# }
+        .sorted()
+        .joined(separator: ",")
+    return jsonResponse(
+        status: status,
+        body: """
+        {
+          "data": {
+            "object_key": "\(objectKey)",
+            "status": "ready",
+            "visibility": "private",
+            "content_type": "\(contentType)",
+            "byte_size": \(byteSize),
+            "checksum_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "metadata": { \(metadataJSON) },
+            "etag": "etag-1",
+            "public_url": null,
+            "rejection_category": null,
+            "created_at": "2026-07-24T01:00:00Z",
+            "updated_at": "2026-07-24T01:00:00Z"
+          }
+        }
+        """
     )
 }
 

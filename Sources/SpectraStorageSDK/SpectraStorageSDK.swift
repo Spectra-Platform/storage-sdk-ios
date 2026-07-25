@@ -156,13 +156,15 @@ public enum SpectraStorageError: Error, Equatable, Sendable {
     case invalidBaseURL
     case invalidObjectPath(String)
     case invalidResponse
+    case invalidContentType(String)
+    case invalidFileName(String)
     case httpStatus(Int, SpectraStorageErrorResponse?)
 }
 
 public final class SpectraStorageClient: @unchecked Sendable {
     private let configuration: SpectraStorageClientConfiguration
     private let tokenProvider: any SpectraStorageAccessTokenProviding
-    private let urlSession: URLSession
+    let urlSession: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 

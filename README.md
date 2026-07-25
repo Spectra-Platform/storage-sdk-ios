@@ -16,6 +16,13 @@ Swift Package 기반의 Spectra Platform Storage iOS SDK다. 이 첫 slice는 iO
   - download intent `POST /storage/user-root/objects/{path...}/download-intents`
   - delete `DELETE /storage/user-root/objects/{path...}`
 - Convenience helper: `uploadDataToUserRoot(...)`
+- App convenience helpers:
+  - `uploadProfileImage(...)`
+  - `uploadChatImage(...)`
+  - `uploadChatFile(...)`
+  - `uploadVoiceMessage(...)`
+  - `downloadDataFromUserRoot(...)`
+  - `downloadUserRootObjectToCache(...)`
 - 검증: `swift test`
 
 Project API token은 iOS 앱 bundle에 넣지 않는다. iOS 앱은 AuthSDK로 app-user token을 얻고, StorageSDK는 token provider protocol만 의존한다.
@@ -82,6 +89,42 @@ let storage = SpectraStorageClient(
 let listing = try await storage.listUserRoot(prefix: "/photos/")
 ```
 
+프로필 사진처럼 앱에서 자주 쓰는 업로드는 SDK가 user-root path, metadata와
+idempotency key를 만들어준다.
+
+```swift
+let uploaded = try await storage.uploadProfileImage(
+    imageData,
+    contentType: "image/png",
+    idempotencySeed: "profile-\(userID)-v1"
+)
+
+let cached = try await storage.downloadUserRootObjectToCache(
+    path: uploaded.objectKey,
+    cacheDirectory: FileManager.default.temporaryDirectory
+)
+```
+
+채팅 첨부도 같은 user-root storage를 사용한다.
+
+```swift
+let image = try await storage.uploadChatImage(
+    imageData,
+    roomID: roomID,
+    clientMessageID: clientMessageID,
+    contentType: "image/jpeg",
+    idempotencySeed: clientMessageID
+)
+
+let voice = try await storage.uploadVoiceMessage(
+    voiceData,
+    roomID: roomID,
+    clientMessageID: clientMessageID,
+    durationSeconds: 3.2,
+    idempotencySeed: "\(clientMessageID)-voice"
+)
+```
+
 ## 로컬 검증
 
 ```bash
@@ -97,3 +140,4 @@ swift test
 - upload expiry GC, malware scanner, multipart upload
 - MediaConvert/HLS derivative metadata와 outbox event
 - 실제 Spectra iOS 앱 integration과 실기기 E2E
+- multipart/progress/cancel/resume가 필요한 대용량 업로드
