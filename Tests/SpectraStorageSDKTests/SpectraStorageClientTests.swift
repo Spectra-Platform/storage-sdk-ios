@@ -8,6 +8,13 @@ final class SpectraStorageClientTests: XCTestCase {
         super.tearDown()
     }
 
+    func testProductionConfigurationOwnsPlatformEndpoint() {
+        let configuration = SpectraStorageClientConfiguration.production(projectId: "project_123")
+
+        XCTAssertEqual(configuration.baseURL.absoluteString, "https://storage.spectra.kr")
+        XCTAssertEqual(configuration.projectId, "project_123")
+    }
+
     func testListUserRootAttachesBearerAndQuery() async throws {
         let client = makeClient()
         MockURLProtocol.handler = { request in

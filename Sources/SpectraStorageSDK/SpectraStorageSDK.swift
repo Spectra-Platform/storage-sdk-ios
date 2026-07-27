@@ -18,12 +18,22 @@ public struct StaticSpectraStorageAccessTokenProvider: SpectraStorageAccessToken
 }
 
 public struct SpectraStorageClientConfiguration: Sendable {
+    public static let productionBaseURL = URL(string: "https://storage.spectra.kr")!
+
     public var baseURL: URL
     public var projectId: String
 
-    public init(baseURL: URL, projectId: String) {
+    public init(baseURL: URL = Self.productionBaseURL, projectId: String) {
         self.baseURL = baseURL
         self.projectId = projectId
+    }
+
+    public static func production(projectId: String) -> SpectraStorageClientConfiguration {
+        SpectraStorageClientConfiguration(projectId: projectId)
+    }
+
+    public static func custom(baseURL: URL, projectId: String) -> SpectraStorageClientConfiguration {
+        SpectraStorageClientConfiguration(baseURL: baseURL, projectId: projectId)
     }
 }
 
@@ -178,6 +188,30 @@ public final class SpectraStorageClient: @unchecked Sendable {
         self.urlSession = urlSession
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder.spectraStorageDecoder
+    }
+
+    public convenience init(
+        projectId: String,
+        tokenProvider: any SpectraStorageAccessTokenProviding,
+        urlSession: URLSession = .shared
+    ) {
+        self.init(
+            configuration: .production(projectId: projectId),
+            tokenProvider: tokenProvider,
+            urlSession: urlSession
+        )
+    }
+
+    public convenience init(
+        auth tokenProvider: any SpectraStorageAccessTokenProviding,
+        projectID: String,
+        urlSession: URLSession = .shared
+    ) {
+        self.init(
+            projectId: projectID,
+            tokenProvider: tokenProvider,
+            urlSession: urlSession
+        )
     }
 
     public func listUserRoot(

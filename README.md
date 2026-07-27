@@ -6,7 +6,7 @@ Swift Package 기반의 Spectra Platform Storage iOS SDK다. 이 첫 slice는 iO
 
 - Swift Package: `SpectraStorageSDK`
 - Package URL: `https://github.com/Spectra-Platform/storage-sdk-ios.git`
-- Public configuration: `baseURL`, `projectId`
+- Public configuration: SDK-owned production `baseURL`, `projectId`
 - Public token provider: `SpectraStorageAccessTokenProviding`
 - User-root API:
   - list `GET /storage/user-root/objects`
@@ -79,10 +79,7 @@ struct StorageTokenProvider: SpectraStorageAccessTokenProviding {
 }
 
 let storage = SpectraStorageClient(
-    configuration: SpectraStorageClientConfiguration(
-        baseURL: URL(string: "https://storage.spectra.kr")!,
-        projectId: "project_123"
-    ),
+    projectId: "project_123",
     tokenProvider: StorageTokenProvider(auth: authClient)
 )
 
