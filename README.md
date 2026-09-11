@@ -64,6 +64,9 @@ target dependency에는 product 이름을 사용한다.
 ## 사용 예시
 
 자세한 앱 통합 흐름은 [iOS StorageSDK integration guide](docs/guides/ios-storage-sdk-integration.md)를 기준으로 본다.
+Modo Camp의 JS SDK parity 목표와 파일 중심 Swift API 초안은
+[Modo Camp iOS Storage SDK parity draft](docs/guides/modo-camp-ios-storage-parity.md)에
+별도로 정리한다.
 
 ```swift
 import Foundation
