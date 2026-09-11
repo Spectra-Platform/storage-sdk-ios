@@ -1,5 +1,20 @@
 # WORKLOG — storage-sdk-ios
 
+## 2026-09-11 — JS parity convenience API implementation
+
+- 상태: 완료, local unit 검증 통과
+- 목적: Modo Camp iOS SwiftUI 앱이 React 웹 Storage SDK와 같은 의미로 Storage를 사용할 수
+  있도록 파일 중심 public API를 추가한다.
+- 결과: `SpectraStorageVisibility`, `SpectraStorageUploadInput`,
+  `SpectraStorageImageUploadInput`, `SpectraStorageFileInfo`,
+  `SpectraStorageUploadProgress`, `SpectraStorageUploadCancellation`과
+  `listFiles`, `uploadFile`, `uploadImage`, `getDownloadUrl`, `downloadData`,
+  `downloadFile`, `deleteFile` alias를 구현했다. Upload intent body는
+  `visibility`, metadata/context/fileInfo, caller checksum을 전달하고 signed PUT은
+  Task/request cancellation과 연결된다.
+- 검증 상태: `swift test` 14 tests 통과, `git diff --check` 통과.
+- 상세 기록: [`docs/work-logs/2026-09-11-02-js-parity-convenience-api.md`](docs/work-logs/2026-09-11-02-js-parity-convenience-api.md)
+
 ## 2026-09-11 — Modo Camp Storage parity draft
 
 - 상태: 문서 계약 초안 완료, 파일 중심 JS-parity alias 구현은 미완료

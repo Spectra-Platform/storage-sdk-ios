@@ -65,6 +65,14 @@ public struct SpectraStorageObject: Codable, Equatable, Sendable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
+
+    public var publicUrl: URL? {
+        publicURL
+    }
+
+    public var checksumSha256: String {
+        checksumSHA256
+    }
 }
 
 public struct SpectraStorageObjectHead: Equatable, Sendable {
@@ -93,6 +101,7 @@ public struct SpectraUserRootUploadRequest: Codable, Equatable, Sendable {
     public var contentType: String
     public var byteSize: Int64
     public var checksumSHA256: String
+    public var visibility: SpectraStorageVisibility?
     public var metadata: [String: String]
 
     public init(
@@ -100,12 +109,14 @@ public struct SpectraUserRootUploadRequest: Codable, Equatable, Sendable {
         contentType: String,
         byteSize: Int64,
         checksumSHA256: String,
+        visibility: SpectraStorageVisibility? = nil,
         metadata: [String: String] = [:]
     ) {
         self.objectKey = objectKey
         self.contentType = contentType
         self.byteSize = byteSize
         self.checksumSHA256 = checksumSHA256
+        self.visibility = visibility
         self.metadata = metadata
     }
 
@@ -114,6 +125,7 @@ public struct SpectraUserRootUploadRequest: Codable, Equatable, Sendable {
         case contentType = "content_type"
         case byteSize = "byte_size"
         case checksumSHA256 = "checksum_sha256"
+        case visibility
         case metadata
     }
 }
@@ -168,7 +180,92 @@ public enum SpectraStorageError: Error, Equatable, Sendable {
     case invalidResponse
     case invalidContentType(String)
     case invalidFileName(String)
+    case invalidMetadataKey(String)
+    case invalidChecksum
+    case imagePathRequired
+    case imagePathAmbiguous
     case httpStatus(Int, SpectraStorageErrorResponse?)
+
+    public var statusCode: Int? {
+        guard case .httpStatus(let status, _) = self else {
+            return nil
+        }
+        return status
+    }
+
+    public var code: String {
+        switch self {
+        case .invalidBaseURL:
+            return "BASE_URL_INVALID"
+        case .invalidObjectPath:
+            return "PATH_INVALID"
+        case .invalidResponse:
+            return "RESPONSE_INVALID"
+        case .invalidContentType:
+            return "CONTENT_TYPE_INVALID"
+        case .invalidFileName:
+            return "FILE_NAME_INVALID"
+        case .invalidMetadataKey:
+            return "METADATA_KEY_INVALID"
+        case .invalidChecksum:
+            return "CHECKSUM_INVALID"
+        case .imagePathRequired:
+            return "IMAGE_PATH_REQUIRED"
+        case .imagePathAmbiguous:
+            return "IMAGE_PATH_AMBIGUOUS"
+        case .httpStatus(_, let payload):
+            return payload?.code ?? "REQUEST_FAILED"
+        }
+    }
+
+    public var requestID: String? {
+        guard case .httpStatus(_, let payload) = self else {
+            return nil
+        }
+        return payload?.requestID
+    }
+
+    public var requestId: String? {
+        requestID
+    }
+
+    public var message: String {
+        switch self {
+        case .invalidBaseURL:
+            return "Spectra Storage baseURL is invalid."
+        case .invalidObjectPath:
+            return "Storage object path is invalid."
+        case .invalidResponse:
+            return "Spectra Storage returned an invalid response."
+        case .invalidContentType:
+            return "Storage content type is invalid."
+        case .invalidFileName:
+            return "Storage file name is invalid."
+        case .invalidMetadataKey:
+            return "Storage metadata key is invalid."
+        case .invalidChecksum:
+            return "Storage checksumSha256 is invalid."
+        case .imagePathRequired:
+            return "uploadImage requires path or directory."
+        case .imagePathAmbiguous:
+            return "uploadImage accepts either path or directory, not both."
+        case .httpStatus(_, let payload):
+            return payload?.message ?? "Spectra Storage request failed."
+        }
+    }
+}
+
+extension SpectraStorageError: CustomStringConvertible, LocalizedError {
+    public var description: String {
+        if let statusCode {
+            return "SpectraStorageError(code: \(code), status: \(statusCode), requestId: \(requestId ?? "nil"), message: \(message))"
+        }
+        return "SpectraStorageError(code: \(code), message: \(message))"
+    }
+
+    public var errorDescription: String? {
+        message
+    }
 }
 
 public final class SpectraStorageClient: @unchecked Sendable {
@@ -313,24 +410,35 @@ public final class SpectraStorageClient: @unchecked Sendable {
         path: String,
         contentType: String,
         metadata: [String: String] = [:],
+        visibility: SpectraStorageVisibility? = nil,
+        checksumSha256: String? = nil,
+        onProgress: (@Sendable (SpectraStorageUploadProgress) -> Void)? = nil,
+        cancellation: SpectraStorageUploadCancellation? = nil,
         uploadIdempotencyKey: String,
         completeIdempotencyKey: String
     ) async throws -> SpectraStorageObject {
-        let checksum = Data(SHA256.hash(data: data)).base64EncodedString()
+        try Task.checkCancellation()
+        try cancellation?.checkCancellation()
+        let total = Int64(data.count)
+        let checksum = try checksumSha256.map(validateChecksumSha256)
+            ?? Data(SHA256.hash(data: data)).base64EncodedString()
+        onProgress?(SpectraStorageUploadProgress(loaded: 0, total: total))
         let intent = try await createUserRootUploadIntent(
             SpectraUserRootUploadRequest(
                 objectKey: normalizedRootPath(path),
                 contentType: contentType,
-                byteSize: Int64(data.count),
+                byteSize: total,
                 checksumSHA256: checksum,
+                visibility: visibility,
                 metadata: metadata
             ),
             idempotencyKey: uploadIdempotencyKey
         )
 
+        try Task.checkCancellation()
+        try cancellation?.checkCancellation()
         var put = URLRequest(url: intent.uploadURL)
         put.httpMethod = intent.uploadMethod ?? "PUT"
-        put.httpBody = data
         for (name, value) in intent.uploadHeaders {
             put.setValue(value, forHTTPHeaderField: name)
         }
@@ -338,13 +446,14 @@ public final class SpectraStorageClient: @unchecked Sendable {
             put.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
 
-        let (_, response) = try await urlSession.data(for: put)
-        guard let http = response as? HTTPURLResponse else {
-            throw SpectraStorageError.invalidResponse
-        }
+        let http = try await uploadSignedData(data, request: put, cancellation: cancellation)
         guard 200 ..< 300 ~= http.statusCode else {
             throw SpectraStorageError.httpStatus(http.statusCode, nil)
         }
+        onProgress?(SpectraStorageUploadProgress(loaded: total, total: total))
+
+        try Task.checkCancellation()
+        try cancellation?.checkCancellation()
 
         return try await completeUserRootUpload(
             uploadID: intent.uploadID,
@@ -398,6 +507,44 @@ public final class SpectraStorageClient: @unchecked Sendable {
         try? decoder.decode(ErrorEnvelope.self, from: data).error
     }
 
+    private func uploadSignedData(
+        _ data: Data,
+        request: URLRequest,
+        cancellation: SpectraStorageUploadCancellation?
+    ) async throws -> HTTPURLResponse {
+        let taskBox = SpectraStorageURLSessionTaskBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = urlSession.uploadTask(with: request, from: data) { _, response, error in
+                    cancellation?.clearCancelHandler()
+                    if let error {
+                        if (error as? URLError)?.code == .cancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(throwing: error)
+                        }
+                        return
+                    }
+                    guard let http = response as? HTTPURLResponse else {
+                        continuation.resume(throwing: SpectraStorageError.invalidResponse)
+                        return
+                    }
+                    continuation.resume(returning: http)
+                }
+                taskBox.set(task)
+                cancellation?.setCancelHandler {
+                    taskBox.cancel()
+                }
+                task.resume()
+                if cancellation?.isCancelled == true {
+                    task.cancel()
+                }
+            }
+        } onCancel: {
+            taskBox.cancel()
+        }
+    }
+
     private func userRootObjectURL(path: String) throws -> URL {
         try userRootURL(suffix: "/objects/\(encodedRootObjectPath(path))")
     }
@@ -414,6 +561,24 @@ public final class SpectraStorageClient: @unchecked Sendable {
             throw SpectraStorageError.invalidBaseURL
         }
         return url
+    }
+}
+
+private final class SpectraStorageURLSessionTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionTask?
+
+    func set(_ task: URLSessionTask) {
+        lock.lock()
+        self.task = task
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        let current = task
+        lock.unlock()
+        current?.cancel()
     }
 }
 
@@ -450,6 +615,14 @@ private func encodedPathSegment(_ value: String) -> String {
     var allowed = CharacterSet.urlPathAllowed
     allowed.remove(charactersIn: "/?#[]@!$&'()*+,;=:")
     return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+}
+
+private func validateChecksumSha256(_ value: String) throws -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        throw SpectraStorageError.invalidChecksum
+    }
+    return trimmed
 }
 
 private extension JSONDecoder {

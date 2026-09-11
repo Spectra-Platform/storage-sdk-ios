@@ -16,6 +16,16 @@ Swift Package 기반의 Spectra Platform Storage iOS SDK다. 이 첫 slice는 iO
   - download intent `POST /storage/user-root/objects/{path...}/download-intents`
   - delete `DELETE /storage/user-root/objects/{path...}`
 - Convenience helper: `uploadDataToUserRoot(...)`
+- JS parity convenience API:
+  - `listFiles(prefix:cursor:limit:)`
+  - `uploadFile(_:)`
+  - `uploadImage(_:)`
+  - `getDownloadUrl(path:)`
+  - `downloadData(path:)`
+  - `downloadFile(path:to:)`
+  - `deleteFile(path:)`
+  - `SpectraStorageVisibility.private/publicRead`
+  - `SpectraStorageUploadInput`, `SpectraStorageImageUploadInput`, `SpectraStorageFileInfo`
 - App convenience helpers:
   - `uploadProfileImage(...)`
   - `uploadChatImage(...)`
@@ -89,6 +99,47 @@ let storage = SpectraStorageClient(
 let listing = try await storage.listUserRoot(prefix: "/photos/")
 ```
 
+Modo Camp처럼 JS Storage SDK와 같은 의미의 파일 중심 API를 쓰는 앱은
+`uploadFile(_:)`/`uploadImage(_:)` alias를 사용할 수 있다. Swift SDK도
+`metadata`, `context`, `fileInfo`, caller-supplied `checksumSha256`, progress closure와
+Task/request cancellation을 지원한다. `fileInfo.originalName`은 JSON metadata로만
+전달하고 diagnostics에는 원문 파일명, 경로, signed URL, bearer token을 남기지 않는다.
+
+```swift
+let cancellation = SpectraStorageUploadCancellation()
+
+let object = try await storage.uploadFile(
+    SpectraStorageUploadInput(
+        data: imageData,
+        path: "/community/images/post-123.png",
+        contentType: "image/png",
+        visibility: .publicRead,
+        context: "community-post",
+        fileInfo: SpectraStorageFileInfo(originalName: "camp.png"),
+        metadata: ["post_id": "post-123"],
+        onProgress: { progress in
+            print("\(progress.loaded)/\(progress.total)")
+        },
+        cancellation: cancellation
+    )
+)
+
+let image = try await storage.uploadImage(
+    SpectraStorageImageUploadInput(
+        imageData: imageData,
+        directory: "/places/images/",
+        fileName: "cover.jpg",
+        contentType: "image/jpeg",
+        visibility: .publicRead
+    )
+)
+
+let downloadURL = try await storage.getDownloadUrl(path: object.objectKey)
+let data = try await storage.downloadData(path: object.objectKey)
+let localURL = try await storage.downloadFile(path: image.objectKey, to: FileManager.default.temporaryDirectory)
+try await storage.deleteFile(path: object.objectKey)
+```
+
 프로필 사진처럼 앱에서 자주 쓰는 업로드는 SDK가 user-root path, metadata와
 idempotency key를 만들어준다.
 
@@ -140,4 +191,4 @@ swift test
 - upload expiry GC, malware scanner, multipart upload
 - MediaConvert/HLS derivative metadata와 outbox event
 - 실제 Spectra iOS 앱 integration과 실기기 E2E
-- multipart/progress/cancel/resume가 필요한 대용량 업로드
+- byte-level progress, multipart upload와 resume가 필요한 대용량 업로드

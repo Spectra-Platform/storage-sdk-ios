@@ -2,24 +2,27 @@
 
 Last checked: 2026-09-11
 
-This guide fixes the Swift Storage SDK target for Modo Camp iOS. It is based
+This guide documents the Swift Storage SDK target for Modo Camp iOS. It is based
 on the local `@spectra-platform/storage-sdk` source. The user supplied web
 version is `0.1.3`; the local checked source is `0.1.4` and includes
-`public_read`, `publicUrl` and object-style upload input, so this draft targets
-that newer local contract.
+`public_read`, `publicUrl` and object-style upload input, so the Swift
+convenience API tracks that newer local contract.
 
 ## Current state
 
 - Existing SwiftPM package: `SpectraStorageSDK`
 - Current iOS package implements user-root list/get/head/upload-intent/complete,
   download-intent/delete and data upload convenience.
-- Current iOS package exposes lower-level names such as `listUserRoot` and
-  `uploadDataToUserRoot`. The Modo-facing API should add JS-parity aliases
-  such as `listFiles`, `uploadFile`, `uploadImage`, `getDownloadUrl`,
-  `downloadData`, `downloadFile` and `deleteFile`.
-- Progress/cancel support is not yet a first-class public contract. Existing
-  async calls can be cancelled by task cancellation, but upload progress needs
-  an explicit transport boundary.
+- Current iOS package also exposes JS-parity aliases: `listFiles`, `uploadFile`,
+  `uploadImage`, `getDownloadUrl`, `downloadData`, `downloadFile` and
+  `deleteFile`.
+- Upload input supports `visibility`, raw safe metadata, `context`, `fileInfo`,
+  caller-supplied `checksumSha256`, progress start/end callbacks and explicit
+  cancellation through `SpectraStorageUploadCancellation`.
+- Existing lower-level names such as `listUserRoot` and `uploadDataToUserRoot`
+  remain available for compatibility.
+- Byte-level progress, multipart upload and pause/resume remain future transport
+  work.
 
 ## Recommended package structure
 
@@ -53,7 +56,7 @@ Do not pass the default Auth access token to Storage when the server expects a
 Storage service token, and do not use a Storage token for Modo backend
 bootstrap.
 
-## Swift public API target
+## Swift public API
 
 ```swift
 public enum SpectraStorageVisibility: String, Codable, Sendable {
@@ -88,6 +91,7 @@ public struct SpectraStorageImageUploadInput: Sendable {
     public var imageData: Data
     public var path: String?
     public var directory: String?
+    public var fileName: String?
     public var contentType: String
     public var visibility: SpectraStorageVisibility?
     public var context: String?
@@ -119,10 +123,13 @@ public actor SpectraStorageClient {
 }
 ```
 
-Swift cancellation should use normal `Task` cancellation. If byte-level upload
-progress and reliable cancellation are required, the implementation should move
-the signed upload from `URLSession.shared.upload` convenience into an injectable
-upload transport that can surface progress and cancel the underlying task.
+Swift cancellation uses normal `Task` cancellation and can also be triggered by
+passing `SpectraStorageUploadCancellation` to upload input and calling
+`cancel()`. The signed PUT step uses `URLSessionUploadTask`, so cancellation
+reaches the underlying request. Progress currently mirrors the JS fetch contract:
+it fires at `loaded: 0` before upload and at `loaded: total` after signed PUT.
+Byte-level progress should be added with an injectable upload transport when
+large-file UX needs it.
 
 ## Modo Camp path guide
 
@@ -156,13 +163,14 @@ needed, but diagnostics should redact them.
 
 | JS local 0.1.4 contract | Swift target | Current iOS state |
 | --- | --- | --- |
-| `listFiles({ prefix, cursor, limit })` | `listFiles(prefix:cursor:limit:)` | Lower-level `listUserRoot` exists |
-| `uploadFile({ file, path, ... })` | `uploadFile(input)` | Lower-level data upload exists |
-| `uploadImage({ file, path/directory, ... })` | `uploadImage(input)` | Purpose-specific helpers exist |
-| `visibility: "private" | "public_read"` | `SpectraStorageVisibility` | Server field decoded, explicit target alias missing |
-| `fileInfo`, `context`, raw metadata validation | Swift upload input mapping | Partial metadata support |
-| automatic checksum | SHA-256 base64 | Implemented for data upload |
-| `onProgress` | progress closure | Needs upload transport work |
-| `getDownloadUrl(path)` | `getDownloadUrl(path:)` | Download intent exists |
-| `downloadBlob(path)` | `downloadData` / `downloadFile` | Data/cache helpers exist |
-| `deleteFile(path)` | `deleteFile(path:)` | Lower-level delete exists |
+| `listFiles({ prefix, cursor, limit })` | `listFiles(prefix:cursor:limit:)` | Implemented alias over `listUserRoot` |
+| `uploadFile({ file, path, ... })` | `uploadFile(_ input:)` | Implemented alias over user-root upload |
+| `uploadImage({ file, path/directory, ... })` | `uploadImage(_ input:)` | Implemented; `directory` uses `fileName`, `fileInfo.originalName`, or generated image name |
+| `visibility: "private" | "public_read"` | `SpectraStorageVisibility` | Implemented in upload intent body |
+| `fileInfo`, `context`, raw metadata validation | Swift upload input mapping | Implemented; mapped to `context`, `original_file_name`, `file_fingerprint`, `last_modified` |
+| automatic checksum | SHA-256 base64 | Implemented for data upload; caller `checksumSha256` override supported |
+| `onProgress` | progress closure | Implemented start/end parity; byte-level remains future transport work |
+| cancellation | Swift Task cancellation + explicit handle | Implemented for signed upload request cancellation |
+| `getDownloadUrl(path)` | `getDownloadUrl(path:)` | Implemented alias over download intent |
+| `downloadBlob(path)` | `downloadData` / `downloadFile` | Implemented |
+| `deleteFile(path)` | `deleteFile(path:)` | Implemented alias over delete |

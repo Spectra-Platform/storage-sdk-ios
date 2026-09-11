@@ -40,7 +40,23 @@
   - `SpectraUserRootDownloadIntent`
   - `SpectraStorageError`
 - User-root list/get/head/upload intent/complete/download intent/delete와 signed PUT convenience를 제공한다.
+- JS parity convenience API를 제공한다.
+  - `listFiles(prefix:cursor:limit:)`
+  - `uploadFile(_:)`, `uploadImage(_:)`
+  - `getDownloadUrl(path:)`, `downloadData(path:)`, `downloadFile(path:to:)`
+  - `deleteFile(path:)`
+  - `SpectraStorageVisibility.private/publicRead`
+  - `SpectraStorageUploadInput`, `SpectraStorageImageUploadInput`, `SpectraStorageFileInfo`
+- 객체형 upload input은 `metadata`, `context`, `fileInfo`, caller-supplied `checksumSha256`,
+  progress closure와 `SpectraStorageUploadCancellation`을 지원한다.
+- Signed PUT은 `URLSessionUploadTask`로 실행해 Swift Task cancellation과
+  explicit cancellation handle이 underlying request cancel로 이어진다.
+- Diagnostics는 `SpectraStorageError.code/statusCode/requestId/message`로 안전하게 노출하며,
+  `String(describing:)`/`LocalizedError`는 raw path, raw file name, raw metadata key, token,
+  signed URL을 포함하지 않는 문구를 사용한다.
 - Unit test는 bearer header, query/path, JSON body, idempotency key, no-content delete와 error decode를 검증한다.
+- JS parity unit test는 visibility mapping, metadata/fileInfo/context mapping, checksum override,
+  progress start/end, cancel-before-network, alias list/download/delete와 diagnostics redaction을 검증한다.
 - iOS 앱 통합 기준 문서는 `docs/guides/ios-storage-sdk-integration.md`에 둔다.
 - SwiftPM 릴리즈 기준은 `docs/guides/release-checklist.md`에 둔다.
 
@@ -61,9 +77,9 @@
 - upload expiry GC, malware scanner, multipart upload
 - MediaConvert/HLS derivative metadata와 outbox event
 - 실제 Spectra iOS 앱 integration과 실기기 E2E
-- JS-parity 파일 중심 API alias와 객체형 upload input
-- upload progress/cancel public contract와 injectable URLSession upload transport
+- byte-level upload progress, multipart upload, pause/resume
+- explicit injectable upload transport boundary
 
 ## 마지막으로 코드와 대조한 날짜
 
-- 2026-09-11 문서와 현재 public API를 Modo Camp parity 기준으로 재대조했다. 코드 구현 경계는 2026-07-24 상태에 파일 중심 API alias가 필요한 상태다.
+- 2026-09-11 문서와 현재 public API를 Modo Camp parity 기준으로 재대조했다. 파일 중심 JS parity alias, 객체형 upload input, progress start/end와 cancellation handle은 코드와 테스트에 반영됐다.

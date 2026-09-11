@@ -244,6 +244,255 @@ final class SpectraStorageClientTests: XCTestCase {
         XCTAssertEqual(requestIndex, 3)
     }
 
+    func testUploadFileParityMapsVisibilityMetadataChecksumAndProgress() async throws {
+        let client = makeClient()
+        var requestIndex = 0
+        let checksum = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
+        let progressRecorder = ProgressRecorder()
+
+        MockURLProtocol.handler = { request in
+            defer { requestIndex += 1 }
+            switch requestIndex {
+            case 0:
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.url?.path, "/platform/v1/projects/project_123/storage/user-root/upload-intents")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key")?.hasPrefix("storage-upload-"), true)
+                let body = try JSONSerialization.jsonObject(with: requestBodyData(request)) as? [String: Any]
+                XCTAssertEqual(body?["object_key"] as? String, "/community/images/photo.png")
+                XCTAssertEqual(body?["content_type"] as? String, "image/png")
+                XCTAssertEqual(body?["byte_size"] as? Int, 10)
+                XCTAssertEqual(body?["checksum_sha256"] as? String, checksum)
+                XCTAssertEqual(body?["visibility"] as? String, "public_read")
+                let metadata = try XCTUnwrap(body?["metadata"] as? [String: String])
+                XCTAssertEqual(metadata["context"], "community-post")
+                XCTAssertEqual(metadata["original_file_name"], "여름 캠프.png")
+                XCTAssertEqual(metadata["file_fingerprint"], "fingerprint-1")
+                XCTAssertEqual(metadata["last_modified"], "1788650000000")
+                XCTAssertEqual(metadata["caption"], "main")
+                return jsonResponse(
+                    status: 201,
+                    body: """
+                    {
+                      "data": {
+                        "upload_id": "upl_file",
+                        "object_key": "/community/images/photo.png",
+                        "upload_method": "PUT",
+                        "upload_url": "https://storage.example.test/signed-put/file",
+                        "upload_headers": {
+                          "Content-Type": "image/png"
+                        },
+                        "expires_at": "2026-09-11T01:15:00Z"
+                      }
+                    }
+                    """
+                )
+            case 1:
+                XCTAssertEqual(request.httpMethod, "PUT")
+                XCTAssertEqual(request.url?.path, "/signed-put/file")
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                XCTAssertEqual(try requestBodyData(request), Data("image-data".utf8))
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+            default:
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Idempotency-Key")?.hasPrefix("storage-complete-"), true)
+                XCTAssertEqual(request.url?.path, "/platform/v1/projects/project_123/storage/user-root/upload-intents/upl_file/complete")
+                return storageObjectEnvelope(
+                    status: 202,
+                    objectKey: "/community/images/photo.png",
+                    contentType: "image/png",
+                    byteSize: 10,
+                    metadata: ["context": "community-post"]
+                )
+            }
+        }
+
+        let uploaded = try await client.uploadFile(
+            SpectraStorageUploadInput(
+                data: Data("image-data".utf8),
+                path: "/community/images/photo.png",
+                contentType: "image/png",
+                visibility: .publicRead,
+                context: "community-post",
+                fileInfo: SpectraStorageFileInfo(
+                    originalName: "여름 캠프.png",
+                    fingerprint: "fingerprint-1",
+                    lastModified: "1788650000000"
+                ),
+                metadata: ["caption": "main"],
+                checksumSha256: checksum,
+                onProgress: { progressRecorder.append($0) }
+            )
+        )
+
+        XCTAssertEqual(uploaded.objectKey, "/community/images/photo.png")
+        XCTAssertEqual(uploaded.checksumSha256, uploaded.checksumSHA256)
+        XCTAssertEqual(progressRecorder.events, [
+            SpectraStorageUploadProgress(loaded: 0, total: 10),
+            SpectraStorageUploadProgress(loaded: 10, total: 10),
+        ])
+        XCTAssertEqual(requestIndex, 3)
+    }
+
+    func testUploadImageParityRequiresImageAndBuildsDirectoryPath() async throws {
+        let client = makeClient()
+        var requestIndex = 0
+        MockURLProtocol.handler = { request in
+            defer { requestIndex += 1 }
+            switch requestIndex {
+            case 0:
+                let body = try JSONSerialization.jsonObject(with: requestBodyData(request)) as? [String: Any]
+                XCTAssertEqual(body?["object_key"] as? String, "/places/images/place_cover.jpg")
+                XCTAssertEqual(body?["content_type"] as? String, "image/jpeg")
+                XCTAssertEqual(body?["visibility"] as? String, "public_read")
+                return jsonResponse(
+                    status: 201,
+                    body: """
+                    {
+                      "data": {
+                        "upload_id": "upl_image",
+                        "object_key": "/places/images/place_cover.jpg",
+                        "upload_method": "PUT",
+                        "upload_url": "https://storage.example.test/signed-put/image",
+                        "upload_headers": {},
+                        "expires_at": "2026-09-11T01:15:00Z"
+                      }
+                    }
+                    """
+                )
+            case 1:
+                XCTAssertEqual(request.httpMethod, "PUT")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "image/jpeg")
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+            default:
+                return storageObjectEnvelope(
+                    status: 202,
+                    objectKey: "/places/images/place_cover.jpg",
+                    contentType: "image/jpeg",
+                    byteSize: 5,
+                    metadata: [:]
+                )
+            }
+        }
+
+        let uploaded = try await client.uploadImage(
+            SpectraStorageImageUploadInput(
+                imageData: Data("image".utf8),
+                directory: "/places/images/",
+                fileName: "place cover.jpg",
+                contentType: "image/jpeg",
+                visibility: .publicRead
+            )
+        )
+
+        XCTAssertEqual(uploaded.objectKey, "/places/images/place_cover.jpg")
+        XCTAssertEqual(requestIndex, 3)
+
+        do {
+            _ = try await client.uploadImage(
+                SpectraStorageImageUploadInput(
+                    imageData: Data(),
+                    path: "/places/images/a.txt",
+                    contentType: "text/plain"
+                )
+            )
+            XCTFail("Expected non-image content type to fail")
+        } catch let error as SpectraStorageError {
+            XCTAssertEqual(error.code, "CONTENT_TYPE_INVALID")
+            XCTAssertFalse(String(describing: error).contains("text/plain"))
+        }
+    }
+
+    func testUploadFileCancellationStopsBeforeNetworkRequest() async throws {
+        let client = makeClient()
+        let cancellation = SpectraStorageUploadCancellation()
+        cancellation.cancel()
+        MockURLProtocol.handler = { _ in
+            XCTFail("Cancelled upload should not create a network request")
+            return (HTTPURLResponse(url: URL(string: "https://storage.example.test")!, statusCode: 500, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        do {
+            _ = try await client.uploadFile(
+                SpectraStorageUploadInput(
+                    data: Data("image-data".utf8),
+                    path: "/chat/media/cancelled.png",
+                    contentType: "image/png",
+                    cancellation: cancellation
+                )
+            )
+            XCTFail("Expected upload to be cancelled")
+        } catch is CancellationError {
+            XCTAssertTrue(cancellation.isCancelled)
+        }
+    }
+
+    func testListDownloadAndDeleteParityAliasesUseUserRootAPIs() async throws {
+        let client = makeClient()
+        var requestIndex = 0
+        MockURLProtocol.handler = { request in
+            defer { requestIndex += 1 }
+            switch requestIndex {
+            case 0:
+                XCTAssertEqual(request.httpMethod, "GET")
+                XCTAssertEqual(request.url?.path, "/platform/v1/projects/project_123/storage/user-root/objects")
+                XCTAssertEqual(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "prefix" })?.value, "/chat/media/")
+                return jsonResponse(
+                    status: 200,
+                    body: """
+                    {
+                      "data": {
+                        "files": [],
+                        "prefixes": ["/chat/media/room-1/"],
+                        "next_cursor": "cursor-2"
+                      }
+                    }
+                    """
+                )
+            case 1:
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.url?.path, "/platform/v1/projects/project_123/storage/user-root/objects/chat/media/a.png/download-intents")
+                return jsonResponse(
+                    status: 201,
+                    body: """
+                    {
+                      "data": {
+                        "object_key": "/chat/media/a.png",
+                        "download_url": "https://storage.example.test/signed-get/file",
+                        "expires_at": "2026-09-11T01:05:00Z"
+                      }
+                    }
+                    """
+                )
+            default:
+                XCTAssertEqual(request.httpMethod, "DELETE")
+                XCTAssertEqual(request.url?.path, "/platform/v1/projects/project_123/storage/user-root/objects/chat/media/a.png")
+                return (HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!, Data())
+            }
+        }
+
+        let listing = try await client.listFiles(prefix: "/chat/media/", limit: 20)
+        let url = try await client.getDownloadUrl(path: "/chat/media/a.png")
+        try await client.deleteFile(path: "/chat/media/a.png")
+
+        XCTAssertEqual(listing.prefixes, ["/chat/media/room-1/"])
+        XCTAssertEqual(listing.nextCursor, "cursor-2")
+        XCTAssertEqual(url.absoluteString, "https://storage.example.test/signed-get/file")
+        XCTAssertEqual(requestIndex, 3)
+    }
+
+    func testParityDiagnosticsRedactRawPathFileNameAndMetadataKey() {
+        let pathError = SpectraStorageError.invalidObjectPath("/profiles/private-name.png")
+        let fileNameError = SpectraStorageError.invalidFileName("secret-name.pdf")
+        let metadataError = SpectraStorageError.invalidMetadataKey("Original Name")
+
+        XCTAssertFalse(String(describing: pathError).contains("private-name"))
+        XCTAssertFalse(String(describing: fileNameError).contains("secret-name"))
+        XCTAssertFalse(String(describing: metadataError).contains("Original Name"))
+        XCTAssertEqual(pathError.code, "PATH_INVALID")
+        XCTAssertEqual(fileNameError.code, "FILE_NAME_INVALID")
+        XCTAssertEqual(metadataError.code, "METADATA_KEY_INVALID")
+    }
+
     func testChatConveniencePathsAndMetadataAreStable() {
         XCTAssertEqual(
             SpectraStorageConveniencePaths.chatObjectKey(
@@ -344,6 +593,23 @@ private final class MockURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedEvents: [SpectraStorageUploadProgress] = []
+
+    var events: [SpectraStorageUploadProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedEvents
+    }
+
+    func append(_ progress: SpectraStorageUploadProgress) {
+        lock.lock()
+        storedEvents.append(progress)
+        lock.unlock()
+    }
 }
 
 private func jsonResponse(status: Int, body: String) -> (HTTPURLResponse, Data) {
